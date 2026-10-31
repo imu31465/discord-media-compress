@@ -3,8 +3,10 @@ const FFMPEG_CLASS_WORKER_URL = 'https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.1
 // The class worker is a module worker, so it must import the ESM core build.
 const FFMPEG_CORE_BASE = 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/esm';
 const FFMPEG_LOAD_TIMEOUT_MS = 60_000;
-const BUILD_ID = 'ultrafast-encode-speed';
+const MEDIABUNNY_URL = 'https://esm.sh/mediabunny@1.62.1';
+const BUILD_ID = 'webcodecs-hardware-fastpath';
 const VIDEO_PRESET = 'ultrafast';
+const FASTPATH_MAX_ATTEMPTS = 2;
 const AUDIO_BITRATE = 160_000;
 const INITIAL_SIZE_FACTOR = 0.92;
 const RETRY_SAFETY_FACTOR = 0.98;
@@ -31,6 +33,8 @@ let resultObjectURL = null;
 let resultFilename = '';
 let ffmpeg = null;
 let ffmpegLoadPromise = null;
+let mediabunnyLoadPromise = null;
+let activeHardwareConversion = null;
 let coreObjectURLs = [];
 let busy = false;
 let cancelled = false;
@@ -395,7 +399,7 @@ function buildEncodeArgs(inputPath, outputPath, bitrate, maxSide) {
   return args;
 }
 
-function updateAudioCheck(sourceCount, outputCount, verified) {
+function updateAudioCheck(sourceCount, outputCount, verified, verificationText = '') {
   els.audioCheck.classList.remove('warning');
   const audioCheckIcon = els.audioCheck.querySelector('.audio-check-icon');
   if (sourceCount === 0 && outputCount === 0) {
@@ -406,12 +410,12 @@ function updateAudioCheck(sourceCount, outputCount, verified) {
   }
   if (verified && sourceCount === outputCount) {
     els.audioCheckTitle.textContent = `音声 ${sourceCount} トラックを保持・検証済み`;
-    els.audioCheckText.textContent = '入力と出力のトラック数が一致し、出力音声のデコード検証にも成功しました。';
+    els.audioCheckText.textContent = verificationText || '入力と出力のトラック数が一致し、出力音声のデコード検証にも成功しました。';
     audioCheckIcon.textContent = '✓';
   }
 }
 
-function showResult(blob, originalSize, outputSize, sourceAudioCount, outputAudioCount, verified, note = '', outputExtension = 'mp4', passThrough = false) {
+function showResult(blob, originalSize, outputSize, sourceAudioCount, outputAudioCount, verified, note = '', outputExtension = 'mp4', passThrough = false, verificationText = '') {
   if (resultObjectURL) URL.revokeObjectURL(resultObjectURL);
   resultObjectURL = URL.createObjectURL(blob);
   resultFilename = passThrough
@@ -428,7 +432,7 @@ function showResult(blob, originalSize, outputSize, sourceAudioCount, outputAudi
     els.audioCheckTitle.textContent = '元ファイルをそのまま保持';
     els.audioCheckText.textContent = '再エンコードせず、音声トラックを含む元データを変更せずに保存します。';
   } else {
-    updateAudioCheck(sourceAudioCount, outputAudioCount, verified);
+    updateAudioCheck(sourceAudioCount, outputAudioCount, verified, verificationText);
   }
   els.resultNote.textContent = note;
   els.progressArea.classList.add('hidden');
@@ -447,6 +451,250 @@ function makeProgressCallback(attempt) {
     span: step,
     label: `${attempt + 1} / ${MAX_ATTEMPTS} 回目`,
   };
+}
+
+
+async function loadMediabunny() {
+  if (mediabunnyLoadPromise) return mediabunnyLoadPromise;
+  mediabunnyLoadPromise = import(MEDIABUNNY_URL);
+  try {
+    return await mediabunnyLoadPromise;
+  } finally {
+    mediabunnyLoadPromise = null;
+  }
+}
+
+async function tryMediabunnyCompression(file, targetBytes) {
+  if (typeof VideoEncoder === 'undefined' || typeof VideoDecoder === 'undefined') {
+    addLog('WebCodecs がこのブラウザで利用できません。FFmpeg WebAssemblyへ切り替えます。');
+    return false;
+  }
+
+  let input = null;
+  let conversion = null;
+
+  try {
+    setProgress(5, '高速エンコードを準備中', 'ブラウザのWebCodecs対応を確認しています。');
+    addLog('WebCodecs 高速エンコード経路を開始');
+    const M = await loadMediabunny();
+    if (!M || !M.Input || !M.Conversion || !M.Mp4OutputFormat) {
+      throw new Error('Mediabunny の必要なAPIを読み込めませんでした。');
+    }
+
+    input = new M.Input({
+      formats: M.ALL_FORMATS,
+      source: new M.BlobSource(file),
+    });
+
+    setProgress(9, '動画を解析中', 'メディア情報と音声トラックを確認しています。');
+    const metadata = await Promise.all([
+      input.getPrimaryVideoTrack(),
+      input.getVideoTracks(),
+      input.getAudioTracks(),
+    ]);
+    const primaryVideo = metadata[0];
+    const videoTracks = metadata[1];
+    const audioTracks = metadata[2];
+    if (!primaryVideo) throw new Error('映像トラックが見つかりません。');
+
+    let duration = await input.getDurationFromMetadata();
+    if (!Number.isFinite(duration) || duration <= 0) duration = await input.computeDuration();
+    if (!Number.isFinite(duration) || duration <= 0) throw new Error('動画の長さを取得できませんでした。');
+
+    const width = await primaryVideo.getDisplayWidth();
+    const height = await primaryVideo.getDisplayHeight();
+    const audioCodecs = await Promise.all(audioTracks.map(async (track) => {
+      try { return (await track.getCodec()) || 'unknown'; } catch { return 'unknown'; }
+    }));
+
+    renderMediaInfo({
+      video: { width: width, height: height },
+      audioStreams: audioCodecs.map((codec) => ({ codec_name: codec })),
+      duration: duration,
+    });
+    addLog('入力解析: ' + width + 'x' + height + ', ' + formatDuration(duration) + ', 音声 ' + audioTracks.length + ' トラック');
+    audioCodecs.forEach((codec, index) => addLog('音声 ' + (index + 1) + ': ' + String(codec).toUpperCase()));
+
+    // Estimate audio size from metadata. Compatible audio (especially AAC)
+    // can be copied into MP4 without another encode pass.
+    const audioRates = await Promise.all(audioTracks.map(async (track) => {
+      try {
+        const average = await track.getAverageBitrate();
+        if (Number.isFinite(average) && average > 0) return average;
+        const peak = await track.getBitrate();
+        if (Number.isFinite(peak) && peak > 0) return peak;
+      } catch { /* use conservative fallback */ }
+      return AUDIO_BITRATE;
+    }));
+    const audioBudget = audioRates.reduce((sum, rate) => sum + rate, 0);
+
+    const initialBudgetBytes = targetBytes * INITIAL_SIZE_FACTOR;
+    let videoBitrate = Math.max(
+      100_000,
+      Math.floor((initialBudgetBytes * 8) / duration - audioBudget - 24_000),
+    );
+    const maxSide = currentMaxSide;
+    let finalBlob = null;
+    let finalSize = 0;
+    let finalAudioCount = 0;
+    let lastAttemptOverLimit = false;
+
+    addLog('映像: AVC / WebCodecs / hardware acceleration を優先');
+    addLog('音声: 全 ' + audioTracks.length + ' トラックを保持。対応形式は再エンコードせずコピーを優先');
+    addLog('初期映像ビットレート: ' + Math.round(videoBitrate / 1000) + ' kbps');
+
+    for (let attempt = 0; attempt < FASTPATH_MAX_ATTEMPTS; attempt++) {
+      if (cancelled) return true;
+
+      const output = new M.Output({
+        format: new M.Mp4OutputFormat(),
+        target: new M.BufferTarget(),
+      });
+
+      const videoOptions = {
+        codec: 'avc',
+        quality: new M.Quality({ bitrate: videoBitrate }),
+        hardwareAcceleration: 'prefer-hardware',
+      };
+      if (maxSide) {
+        const scale = Math.min(1, maxSide / Math.max(width, height));
+        videoOptions.width = Math.max(2, Math.floor(width * scale / 2) * 2);
+        videoOptions.height = Math.max(2, Math.floor(height * scale / 2) * 2);
+        videoOptions.fit = 'fill';
+      }
+
+      addLog('WebCodecs エンコード ' + (attempt + 1) + '/' + FASTPATH_MAX_ATTEMPTS + ': ' + Math.round(videoBitrate / 1000) + ' kbps');
+      conversion = await M.Conversion.init({
+        input: input,
+        output: output,
+        tracks: 'all',
+        video: videoOptions,
+      });
+
+      const discardedAudio = conversion.discardedTracks.filter(({ track }) => track.type === 'audio');
+      const utilizedAudio = conversion.utilizedTracks.filter((track) => track.type === 'audio');
+      if (!conversion.isValid || discardedAudio.length > 0 || utilizedAudio.length !== audioTracks.length) {
+        const detail = discardedAudio.map(({ reason }) => reason).join(', ') || 'required track unavailable';
+        throw new Error('WebCodecs経路で音声を含む全トラックを保持できません (' + detail + ')。FFmpegへ切り替えます。');
+      }
+
+      activeHardwareConversion = conversion;
+      conversion.onProgress = (progress) => {
+        const value = Number(progress);
+        if (!cancelled && Number.isFinite(value)) {
+          setProgress(
+            13 + Math.max(0, Math.min(1, value)) * 70,
+            'ハードウェアエンコード中',
+            Math.round(value * 100) + '% · WebCodecs',
+            (attempt + 1) + ' / ' + FASTPATH_MAX_ATTEMPTS + ' 回目',
+          );
+        }
+      };
+
+      await conversion.execute();
+      activeHardwareConversion = null;
+      if (cancelled) return true;
+
+      const buffer = output.target.buffer;
+      if (!buffer || !buffer.byteLength) throw new Error('WebCodecsの出力ファイルが空です。');
+      finalSize = buffer.byteLength;
+      lastAttemptOverLimit = finalSize > targetBytes * 0.95;
+      addLog('WebCodecs 出力サイズ: ' + formatBytes(finalSize));
+
+      if (lastAttemptOverLimit && attempt < FASTPATH_MAX_ATTEMPTS - 1) {
+        const corrected = Math.max(
+          100_000,
+          Math.floor(videoBitrate * ((targetBytes * 0.92) / finalSize) * RETRY_SAFETY_FACTOR),
+        );
+        if (corrected < videoBitrate) {
+          videoBitrate = corrected;
+          addLog('サイズ調整のため1回だけ再試行: ' + Math.round(videoBitrate / 1000) + ' kbps');
+          conversion = null;
+          continue;
+        }
+      }
+
+      // Re-open the result and verify every source audio track survived.
+      setProgress(86, '音声を検証中', '出力ファイルの全音声トラックを確認しています。');
+      const verifyInput = new M.Input({
+        formats: M.ALL_FORMATS,
+        source: new M.BlobSource(new Blob([buffer], { type: 'video/mp4' })),
+      });
+
+      try {
+        const [outputAudioTracks, outputVideoTracks] = await Promise.all([
+          verifyInput.getAudioTracks(),
+          verifyInput.getVideoTracks(),
+        ]);
+        if (outputAudioTracks.length !== audioTracks.length) {
+          throw new Error('音声トラック数が一致しません。入力 ' + audioTracks.length + ' / 出力 ' + outputAudioTracks.length + '。');
+        }
+        if (outputVideoTracks.length !== videoTracks.length) {
+          throw new Error('映像トラック数が一致しません。入力 ' + videoTracks.length + ' / 出力 ' + outputVideoTracks.length + '。');
+        }
+
+        for (let index = 0; index < outputAudioTracks.length; index++) {
+          const track = outputAudioTracks[index];
+          if (!(await track.canDecode())) {
+            throw new Error('出力音声 ' + (index + 1) + ' をこのブラウザでデコードできません。');
+          }
+          const timestamp = await track.getFirstTimestamp();
+          const sink = new M.AudioSampleSink(track);
+          const sample = await sink.getSample(Number.isFinite(timestamp) ? timestamp : 0);
+          if (!sample) throw new Error('出力音声 ' + (index + 1) + ' のデコード確認に失敗しました。');
+        }
+
+        finalAudioCount = outputAudioTracks.length;
+      } finally {
+        verifyInput.dispose();
+      }
+
+      finalBlob = new Blob([buffer], { type: 'video/mp4' });
+      break;
+    }
+
+    if (!finalBlob) throw new Error('WebCodecsで出力ファイルを作成できませんでした。');
+
+    const noteParts = [
+      'ブラウザのWebCodecs経路で映像をエンコードしました。ハードウェアアクセラレーションを優先指定していますが、実際の使用可否はブラウザとGPUドライバーに依存します。',
+      '入力の全音声トラックが出力に存在し、各トラックの先頭サンプルをデコードできることを確認しました。',
+    ];
+    if (finalSize > targetBytes) {
+      noteParts.push('音声を削除せずに圧縮した結果、指定サイズを超えています (' + formatBytes(finalSize) + ')。');
+    } else if (lastAttemptOverLimit) {
+      noteParts.push('安全マージンは超えていますが、指定サイズ内に収まっています。');
+    }
+
+    showResult(
+      finalBlob,
+      file.size,
+      finalSize,
+      audioTracks.length,
+      finalAudioCount,
+      true,
+      noteParts.join(' '),
+      'mp4',
+      false,
+      '全音声トラック数が一致し、各トラックの先頭サンプルをデコード確認しました。',
+    );
+    addLog('音声検証成功: ' + finalAudioCount + ' トラック / 全トラック保持');
+    addLog('WebCodecs高速経路の処理が完了');
+    return true;
+  } catch (error) {
+    if (cancelled) return true;
+    const message = error instanceof Error ? error.message : String(error);
+    addLog('WebCodecs高速経路を使用できません: ' + message);
+    addLog('互換性を優先してFFmpeg WebAssemblyへ切り替えます。');
+    if (conversion && typeof conversion.cancel === 'function') {
+      try { await conversion.cancel(); } catch { /* conversion may already be complete */ }
+    }
+    return false;
+  } finally {
+    activeHardwareConversion = null;
+    if (input) {
+      try { input.dispose(); } catch { /* already disposed */ }
+    }
+  }
 }
 
 async function runCompression() {
@@ -483,6 +731,9 @@ async function runCompression() {
   let sourceInfo = null;
   let outputInfo = null;
   try {
+    const hardwareCompleted = await tryMediabunnyCompression(file, targetBytes);
+    if (hardwareCompleted || cancelled) return;
+
     engine = await ensureFFmpeg();
     if (cancelled) return;
 
@@ -632,6 +883,9 @@ function cancelCompression() {
   if (!busy) return;
   cancelled = true;
   addLog('処理をキャンセルしています');
+  if (activeHardwareConversion && typeof activeHardwareConversion.cancel === 'function') {
+    activeHardwareConversion.cancel().catch(() => { /* conversion already settled */ });
+  }
   if (ffmpeg) {
     try { ffmpeg.terminate(); } catch { /* worker already stopped */ }
   }
