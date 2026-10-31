@@ -3,7 +3,8 @@ const FFMPEG_CLASS_WORKER_URL = 'https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.1
 // The class worker is a module worker, so it must import the ESM core build.
 const FFMPEG_CORE_BASE = 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/esm';
 const FFMPEG_LOAD_TIMEOUT_MS = 60_000;
-const BUILD_ID = 'single-pass-bitrate-tuning';
+const BUILD_ID = 'ultrafast-encode-speed';
+const VIDEO_PRESET = 'ultrafast';
 const AUDIO_BITRATE = 160_000;
 const INITIAL_SIZE_FACTOR = 0.92;
 const RETRY_SAFETY_FACTOR = 0.98;
@@ -377,7 +378,7 @@ function buildEncodeArgs(inputPath, outputPath, bitrate, maxSide) {
     '-map_metadata', '0',
     '-map_chapters', '0',
     '-c:v', 'libx264',
-    '-preset', 'veryfast',
+    '-preset', VIDEO_PRESET,
     '-pix_fmt', 'yuv420p',
     '-b:v', String(Math.max(50_000, Math.floor(bitrate))),
     '-maxrate', String(Math.max(50_000, Math.floor(bitrate))),
@@ -526,6 +527,7 @@ async function runCompression() {
       const title = `動画を圧縮中 (${attempt + 1}/${MAX_ATTEMPTS})`;
       setProgress(progressRange.start, title, `映像 ${Math.round(videoBitrate / 1000)} kbps · 音声 ${sourceInfo.audioStreams.length} トラック`, progressRange.label);
       addLog(`エンコード ${attempt + 1}/${MAX_ATTEMPTS}: video bitrate ${Math.round(videoBitrate / 1000)} kbps`);
+      addLog(`エンコーダー設定: libx264 / preset ${VIDEO_PRESET}`);
 
       const exitCode = await engine.exec(buildEncodeArgs(inputPath, outputPath, videoBitrate, currentMaxSide));
       if (cancelled) return;
