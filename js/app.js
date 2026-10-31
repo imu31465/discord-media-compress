@@ -3,8 +3,10 @@ const FFMPEG_CLASS_WORKER_URL = 'https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.1
 // The class worker is a module worker, so it must import the ESM core build.
 const FFMPEG_CORE_BASE = 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/esm';
 const FFMPEG_LOAD_TIMEOUT_MS = 60_000;
-const BUILD_ID = 'ffprobe-json-result-check';
+const BUILD_ID = 'single-pass-bitrate-tuning';
 const AUDIO_BITRATE = 160_000;
+const INITIAL_SIZE_FACTOR = 0.92;
+const RETRY_SAFETY_FACTOR = 0.98;
 const MAX_ATTEMPTS = 3;
 
 const $ = (id) => document.getElementById(id);
@@ -508,7 +510,12 @@ async function runCompression() {
     }
 
     const audioBudget = sourceInfo.audioStreams.length * AUDIO_BITRATE;
-    let videoBitrate = Math.max(80_000, Math.floor((safeTargetBytes * 8) / sourceInfo.duration - audioBudget));
+    // Start slightly below the hard safety limit to account for muxing and
+    // rate-control variance. This is tuned from real output: the old 95%
+    // estimate landed just over its limit and forced a second full encode.
+    const initialBudgetBytes = targetBytes * INITIAL_SIZE_FACTOR;
+    let videoBitrate = Math.max(80_000, Math.floor((initialBudgetBytes * 8) / sourceInfo.duration - audioBudget));
+    addLog(`初期サイズ目標: ${(INITIAL_SIZE_FACTOR * 100).toFixed(0)}% / 再試行判定: ${(safeTargetBytes / targetBytes * 100).toFixed(0)}%`);
     let finalSize = 0;
     let lastAttemptOverLimit = false;
 
@@ -533,10 +540,10 @@ async function runCompression() {
       if (!lastAttemptOverLimit || attempt === MAX_ATTEMPTS - 1) break;
 
       outputData = null;
-      const corrected = Math.max(50_000, Math.floor(videoBitrate * (safeTargetBytes / finalSize) * 0.92));
+      const corrected = Math.max(50_000, Math.floor(videoBitrate * (safeTargetBytes / finalSize) * RETRY_SAFETY_FACTOR));
       if (corrected >= videoBitrate) break;
       videoBitrate = corrected;
-      addLog(`実測サイズからビットレートを再調整: ${Math.round(videoBitrate / 1000)} kbps`);
+      addLog(`実測サイズからビットレートを再調整: ${Math.round(videoBitrate / 1000)} kbps (補正係数 ${RETRY_SAFETY_FACTOR})`);
     }
 
     if (cancelled) return;
