@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="ja" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0b0e0c">
+  <meta name="description" content="動画をDiscord向けに圧縮。音声トラックを保持し、出力後に欠落とデコードを検証します。">
+  <title>SONIC KEEP — Video Compressor</title>
+  <link rel="icon" type="image/svg+xml" href="favicon.svg">
+  <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="ambient ambient-a"></div>
+  <div class="ambient ambient-b"></div>
+
+  <header class="topbar">
+    <a class="brand" href="#top" aria-label="SONIC KEEP ホーム">
+      <span class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 36 36" fill="none">
+          <path d="M4 19h5l3-9 5 18 4-13 3 7 3-3h5" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </span>
+      <span class="brand-copy"><strong>SONIC KEEP</strong><small>VIDEO COMPRESSOR</small></span>
+    </a>
+    <div class="topbar-right">
+      <span class="privacy"><span class="privacy-dot"></span>ファイルは端末内で処理</span>
+      <button class="theme-toggle" id="themeToggle" type="button" aria-label="テーマを切り替え" title="テーマを切り替え">
+        <svg class="sun-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M4.93 4.93l1.42 1.42m11.3 11.3 1.42 1.42M2 12h2m16 0h2M4.93 19.07l1.42-1.42m11.3-11.3 1.42-1.42"/></svg>
+        <svg class="moon-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20.5 14.2A8.7 8.7 0 0 1 9.8 3.5 8.8 8.8 0 1 0 20.5 14.2Z"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <main id="top" class="shell">
+    <section class="hero">
+      <div class="hero-copy">
+        <div class="eyebrow"><span class="eyebrow-line"></span>VIDEO, WITHOUT THE SILENCE</div>
+        <h1>動画は軽く。<br><span>音はそのまま。</span></h1>
+        <p class="hero-description">Discordに送れるサイズへ動画を圧縮。映像を最適化しながら、音声トラックをすべて引き継ぎます。</p>
+      </div>
+      <div class="hero-proof">
+        <div class="proof-icon" aria-hidden="true">
+          <svg viewBox="0 0 48 48" fill="none"><path d="M6 19h6l4-8 7 26 6-19 4 10 4-7h5" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/><circle cx="24" cy="24" r="21" stroke="currentColor" stroke-opacity=".25"/></svg>
+        </div>
+        <div><strong>音声保持を検証</strong><small>全音声トラックを出力後にチェック</small></div>
+        <span class="proof-check">✓</span>
+      </div>
+    </section>
+
+    <section class="workspace" aria-label="動画圧縮ツール">
+      <div class="main-column">
+        <section class="panel source-panel">
+          <div class="panel-heading">
+            <div><span class="step-label">01 / SOURCE</span><h2>動画を選択</h2></div>
+            <span class="heading-meta">MP4 · MOV · WEBM · MKV ほか</span>
+          </div>
+
+          <input id="fileInput" type="file" accept="video/*,.mp4,.m4v,.mov,.mkv,.webm,.avi,.wmv,.flv,.mpeg,.mpg,.3gp,.ts,.mts,.m2ts" hidden>
+          <div class="dropzone" id="dropzone" tabindex="0" role="button" aria-label="動画ファイルを選択またはドロップ">
+            <div class="drop-icon" aria-hidden="true">
+              <svg viewBox="0 0 48 48" fill="none"><path d="M24 31V8m0 0-8 8m8-8 8 8" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M10 27v10a4 4 0 0 0 4 4h20a4 4 0 0 0 4-4V27" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+            </div>
+            <div class="drop-title">動画をここにドロップ</div>
+            <div class="drop-subtitle">または <button id="browseButton" class="text-button" type="button">ファイルを選択</button></div>
+            <div class="drop-footnote">ファイルはアップロードされません。処理はこのブラウザ内で実行されます。</div>
+          </div>
+
+          <div id="fileCard" class="file-card hidden">
+            <div class="file-type-icon" aria-hidden="true">
+              <svg viewBox="0 0 28 28" fill="none"><rect x="3" y="4" width="22" height="20" rx="4" stroke="currentColor" stroke-width="1.6"/><path d="m12 10 6 4-6 4v-8Z" fill="currentColor"/></svg>
+            </div>
+            <div class="file-details"><strong id="fileName">video.mp4</strong><span id="fileMeta">0 MB · 未解析</span></div>
+            <button id="removeFile" class="icon-button" type="button" aria-label="動画を削除" title="動画を削除"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button>
+          </div>
+
+          <div id="sourcePreviewWrap" class="preview-wrap hidden">
+            <video id="sourcePreview" controls playsinline preload="metadata"></video>
+            <div class="preview-caption"><span>INPUT PREVIEW</span><span id="sourceResolution">プレビュー</span></div>
+          </div>
+
+          <div id="mediaDetails" class="media-details hidden">
+            <div><span>長さ</span><strong id="detailDuration">—</strong></div>
+            <div><span>解像度</span><strong id="detailResolution">—</strong></div>
+            <div><span>音声トラック</span><strong id="detailAudio">—</strong></div>
+            <div><span>音声形式</span><strong id="detailAudioCodec">—</strong></div>
+          </div>
+        </section>
+
+        <section class="panel process-panel" id="processPanel">
+          <div class="panel-heading">
+            <div><span class="step-label">03 / OUTPUT</span><h2>圧縮結果</h2></div>
+            <span id="processState" class="state-pill">待機中</span>
+          </div>
+
+          <div id="emptyResult" class="empty-result">
+            <div class="empty-wave" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+            <p>圧縮を開始すると、ここに結果が表示されます。</p>
+          </div>
+
+          <div id="progressArea" class="progress-area hidden">
+            <div class="progress-top"><strong id="progressTitle">準備中...</strong><span id="progressPercent">0%</span></div>
+            <div class="progress-track"><div id="progressFill" class="progress-fill"></div></div>
+            <div class="progress-bottom"><span id="progressMessage">FFmpegを準備しています</span><span id="progressAttempt"></span></div>
+          </div>
+
+          <div id="resultArea" class="result-area hidden">
+            <div class="result-summary">
+              <div class="result-size"><span>OUTPUT SIZE</span><strong id="resultSize">—</strong></div>
+              <div class="result-saving"><span id="resultSavingLabel">SIZE CHANGE</span><strong id="resultSaving">—</strong></div>
+            </div>
+            <div id="audioCheck" class="audio-check">
+              <span class="audio-check-icon">✓</span>
+              <div><strong id="audioCheckTitle">音声トラックを確認しました</strong><small id="audioCheckText">入力と出力のトラック数が一致し、デコード検証に成功しました。</small></div>
+            </div>
+            <video id="resultPreview" controls playsinline preload="metadata"></video>
+            <div class="result-actions">
+              <button id="downloadButton" class="primary-button download-button" type="button"><span>動画をダウンロード</span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m0 0 5-5m-5 5-5-5M4 17v3h16v-3"/></svg></button>
+              <button id="resetButton" class="secondary-button" type="button">別の動画</button>
+            </div>
+            <p id="resultNote" class="result-note"></p>
+          </div>
+
+          <details class="log-details" id="logDetails">
+            <summary><span>処理ログ</span><span id="logCount">0 lines</span></summary>
+            <pre id="logOutput">ログはまだありません。</pre>
+          </details>
+        </section>
+      </div>
+
+      <aside class="side-column">
+        <section class="panel settings-panel">
+          <div class="panel-heading">
+            <div><span class="step-label">02 / SETTINGS</span><h2>圧縮設定</h2></div>
+          </div>
+
+          <div class="setting-group">
+            <div class="setting-label-row"><label>Discord プラン</label><span class="setting-hint">目標サイズ</span></div>
+            <div class="plan-grid" id="planGrid">
+              <button class="plan-option selected" type="button" data-size="20" data-label="Free"><span>FREE</span><strong>20 MB</strong><small>最大 1280px</small></button>
+              <button class="plan-option" type="button" data-size="50" data-label="Basic"><span>BASIC</span><strong>50 MB</strong><small>最大 1920px</small></button>
+              <button class="plan-option" type="button" data-size="500" data-label="Nitro"><span>NITRO</span><strong>500 MB</strong><small>元解像度</small></button>
+            </div>
+          </div>
+
+          <div class="setting-divider"></div>
+
+          <div class="setting-group custom-setting">
+            <div class="setting-label-row"><label for="customSize">カスタムサイズ</label><span class="setting-hint">任意の上限</span></div>
+            <div class="number-field"><input id="customSize" type="number" min="1" max="500" step="1" value="20" inputmode="numeric"><span>MB</span></div>
+            <p class="field-note">Discordの添付上限より少し小さめに設定すると安全です。</p>
+          </div>
+
+          <div class="setting-divider"></div>
+
+          <div class="setting-group audio-setting">
+            <div class="audio-setting-head"><span class="audio-mini-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3 10v4h4l5 4V6l-5 4H3Zm13-3a7 7 0 0 1 0 10m3-13a11 11 0 0 1 0 16"/></svg></span><div><strong>音声トラックを保持</strong><small>常時オン・無効化できません</small></div><span class="locked-switch"><i></i></span></div>
+            <p>すべての音声トラックをAACへ変換して出力します。出力後にトラック数とデコードを検証し、欠落があれば保存を許可しません。</p>
+          </div>
+
+          <div class="setting-divider"></div>
+
+          <div class="setting-group">
+            <div class="setting-label-row"><label>画質の処理</label><span class="setting-hint">自動調整</span></div>
+            <div class="quality-row"><span class="quality-dot"></span><div><strong>サイズ優先で最適化</strong><small>目標サイズに合わせてビットレートを調整</small></div></div>
+          </div>
+
+          <button id="compressButton" class="primary-button compress-button" type="button" disabled><span>圧縮を開始</span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14m-6-6 6 6-6 6"/></svg></button>
+          <button id="cancelButton" class="cancel-button hidden" type="button">処理をキャンセル</button>
+          <p class="engine-note"><span class="engine-dot"></span>Powered by FFmpeg WebAssembly <span class="engine-size">初回ロード 約31MB</span></p>
+        </section>
+
+        <section class="audio-assurance">
+          <div class="assurance-mark" aria-hidden="true"><svg viewBox="0 0 36 36" fill="none"><path d="M5 17h5l3-7 5 16 4-12 3 7 2-4h4" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="m24 5 2.3 2.3L31 2.5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+          <div><strong>音声を黙って捨てない</strong><p>音声を読み取れない場合や検証に失敗した場合は、無音の動画を出力せずエラーにします。</p></div>
+        </section>
+      </aside>
+    </section>
+
+    <section class="bottom-note">
+      <div class="note-lock"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 1 1 8 0v3"/></svg></div>
+      <p><strong>プライバシーについて</strong><span>動画ファイルはサーバーへ送信されません。FFmpeg本体の初回取得時のみCDNへ接続します。</span></p>
+      <span class="local-badge">LOCAL PROCESSING</span>
+    </section>
+
+    <footer class="footer"><span>SONIC KEEP <i>·</i> MADE FOR CLEARER SHARES</span><span>音声保持検証付き動画圧縮ツール</span></footer>
+  </main>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
