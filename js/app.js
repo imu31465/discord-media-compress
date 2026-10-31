@@ -291,18 +291,24 @@ async function ensureFFmpeg() {
 }
 
 async function probeMedia(engine, inputPath, outputPath, countPackets = false) {
+  // ffmpeg.wasm's ffprobe wrapper expects the input path before its
+  // special "-o" output-file option (same order as the upstream API example).
   const args = [
     '-v', 'error',
     ...(countPackets ? ['-count_packets'] : []),
     '-show_streams',
     '-show_format',
     '-of', 'json',
-    '-o', outputPath,
     inputPath,
+    '-o', outputPath,
   ];
   try {
+    addLog(`FFprobe: ${countPackets ? 'packet-count probe' : 'input probe'} を実行`);
     const code = await engine.ffprobe(args);
-    if (code !== 0) throw new Error('動画の解析に失敗しました。対応していない形式か、ファイルが破損している可能性があります。');
+    if (code !== 0) {
+      addLog(`FFprobe failed with exit code: ${code}`);
+      throw new Error(`動画の解析に失敗しました (FFprobe exit code: ${code})。処理ログに表示されたFFmpegのエラーを確認してください。`);
+    }
     const raw = await engine.readFile(outputPath, 'utf8');
     try {
       return JSON.parse(raw);
