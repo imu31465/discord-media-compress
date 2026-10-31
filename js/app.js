@@ -1,6 +1,7 @@
 const FFMPEG_DRIVER_URL = 'https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.15/dist/esm/index.js';
 const FFMPEG_CLASS_WORKER_URL = 'https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.15/dist/esm/worker.js';
-const FFMPEG_CORE_BASE = 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/umd';
+// The class worker is a module worker, so it must import the ESM core build.
+const FFMPEG_CORE_BASE = 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/esm';
 const FFMPEG_LOAD_TIMEOUT_MS = 60_000;
 const AUDIO_BITRATE = 160_000;
 const MAX_ATTEMPTS = 3;
@@ -249,19 +250,28 @@ async function ensureFFmpeg() {
 
     try {
       setProgress(6, '圧縮エンジンを準備中', 'FFmpegコアを取得しています。');
-      const [coreURL, wasmURL] = await Promise.all([
-        fetchBlobURL(`${FFMPEG_CORE_BASE}/ffmpeg-core.js`, 'text/javascript'),
-        fetchBlobURL(`${FFMPEG_CORE_BASE}/ffmpeg-core.wasm`, 'application/wasm'),
-      ]);
+      // Keep the core on its CDN URL. The module worker imports this ESM
+      // entrypoint directly; a Blob URL made from the UMD build has no default
+      // export and causes "failed to import ffmpeg-core.js".
+      const coreURL = `${FFMPEG_CORE_BASE}/ffmpeg-core.js`;
+      const wasmURL = `${FFMPEG_CORE_BASE}/ffmpeg-core.wasm`;
       const classWorkerURL = createModuleWorkerProxyURL(FFMPEG_CLASS_WORKER_URL);
       addLog('FFmpeg Worker を初期化しています');
-      await Promise.race([
-        engine.load({ coreURL, wasmURL, classWorkerURL }),
-        new Promise((_, reject) => setTimeout(
-          () => reject(new Error('FFmpeg Worker の初期化が60秒以内に完了しませんでした。CDNへの接続、広告ブロッカー、ブラウザのWorker制限を確認してください。')),
-          FFMPEG_LOAD_TIMEOUT_MS,
-        )),
-      ]);
+      addLog('ES Module 版 FFmpeg コアを読み込んでいます');
+      let loadTimeout;
+      try {
+        await Promise.race([
+          engine.load({ coreURL, wasmURL, classWorkerURL }),
+          new Promise((_, reject) => {
+            loadTimeout = setTimeout(
+              () => reject(new Error('FFmpeg Worker の初期化が60秒以内に完了しませんでした。CDNへの接続、広告ブロッカー、ブラウザのWorker制限を確認してください。')),
+              FFMPEG_LOAD_TIMEOUT_MS,
+            );
+          }),
+        ]);
+      } finally {
+        clearTimeout(loadTimeout);
+      }
       ffmpeg = engine;
       addLog('FFmpeg WebAssembly のロードが完了');
       return engine;
