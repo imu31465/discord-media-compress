@@ -9,9 +9,11 @@ Discord向けの動画圧縮を行う、GitHub Pages対応の静的Webアプリ�
 - MP4 (H.264 + AAC) へ変換
 - 入力に含まれる**すべての音声ストリーム**を出力へマッピング
 - 目標サイズを超えた場合は映像ビットレートを再計算して最大3回試行
-- ブラウザ内のシングルスレッド処理を優先し、H.264は`ultrafast`プリセットでエンコード（速度優先のため同一ビットレートでは画質効率が下がる場合があります）
-- 出力後にFFprobeで音声トラック数・音声パケット数を確認
-- 出力音声をデコードテストし、欠落や検証失敗時はダウンロードを許可しない
+- 対応ブラウザではWebCodecs + Mediabunnyを使い、H.264映像のハードウェアエンコードを優先（実際にハードウェアが使われるかはブラウザ・GPU・ドライバーに依存）
+- 対応する音声コーデックは再エンコードせずコピーし、入力の全音声トラックを保持
+- WebCodecs経路では出力の全音声トラック数と各トラックのデコード可能なサンプルを確認
+- WebCodecs非対応・入力形式非対応・音声保持や検証に失敗した場合は、FFmpeg WebAssemblyへ自動フォールバック
+- FFmpeg経路では出力後にFFprobeで音声トラック数・音声パケット数を確認し、全音声を最後までデコード検証
 - ダーク / ライトテーマ、ドラッグ＆ドロップ、プレビュー、キャンセル、処理ログ
 
 ## 音声を保持する仕組み
@@ -64,11 +66,12 @@ python -m http.server 8000
 ## 技術構成
 
 - HTML / CSS / Vanilla JavaScript
+- `mediabunny` 1.62.1 (WebCodecs高速経路)
 - `@ffmpeg/ffmpeg` 0.12.15
-- `@ffmpeg/core` 0.12.10 (single-thread)
+- `@ffmpeg/core` 0.12.10 (single-thread, 互換フォールバック)
 - FFmpegのFFprobe APIによるメタデータ・出力検証
 
-FFmpegのJavaScriptドライバーとWASMコアはJSDelivrから初回ロード時に取得します。コアは約31MBです。複数スレッド版はSharedArrayBufferとCOOP/COEPヘッダーを必要とするため、この静的ホスティング向け構成ではシングルスレッド版を使用しています。
+Mediabunnyはesm.shから遅延ロードします。WebCodecsはブラウザ標準APIを利用するため、FFmpeg WASMコアの初回ダウンロードを回避できます。高速経路が使えない場合に備えてFFmpeg WebAssemblyも残しており、その経路ではJSDelivrからコア（約31MB）を取得します。FFmpeg側はGitHub PagesでCOOP/COEPヘッダーを設定しない構成のためシングルスレッド版です。
 
 ## 制限・注意
 
