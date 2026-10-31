@@ -1,5 +1,7 @@
 const FFMPEG_DRIVER_URL = 'https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.15/dist/esm/index.js';
+const FFMPEG_CLASS_WORKER_URL = 'https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.15/dist/esm/worker.js';
 const FFMPEG_CORE_BASE = 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/umd';
+const FFMPEG_LOAD_TIMEOUT_MS = 60_000;
 const AUDIO_BITRATE = 160_000;
 const MAX_ATTEMPTS = 3;
 
@@ -208,6 +210,16 @@ function releaseCoreURLs() {
   coreObjectURLs = [];
 }
 
+function createModuleWorkerProxyURL(moduleURL) {
+  // The package ESM is loaded from jsDelivr, but browsers block a Worker
+  // constructed directly from a cross-origin script URL. A same-origin Blob
+  // worker can import the CDN module (and its relative dependencies) normally.
+  const source = `import "${moduleURL}";`;
+  const url = URL.createObjectURL(new Blob([source], { type: 'text/javascript' }));
+  coreObjectURLs.push(url);
+  return url;
+}
+
 async function ensureFFmpeg() {
   if (ffmpeg?.loaded) return ffmpeg;
   if (ffmpegLoadPromise) return ffmpegLoadPromise;
@@ -241,7 +253,15 @@ async function ensureFFmpeg() {
         fetchBlobURL(`${FFMPEG_CORE_BASE}/ffmpeg-core.js`, 'text/javascript'),
         fetchBlobURL(`${FFMPEG_CORE_BASE}/ffmpeg-core.wasm`, 'application/wasm'),
       ]);
-      await engine.load({ coreURL, wasmURL });
+      const classWorkerURL = createModuleWorkerProxyURL(FFMPEG_CLASS_WORKER_URL);
+      addLog('FFmpeg Worker を初期化しています');
+      await Promise.race([
+        engine.load({ coreURL, wasmURL, classWorkerURL }),
+        new Promise((_, reject) => setTimeout(
+          () => reject(new Error('FFmpeg Worker の初期化が60秒以内に完了しませんでした。CDNへの接続、広告ブロッカー、ブラウザのWorker制限を確認してください。')),
+          FFMPEG_LOAD_TIMEOUT_MS,
+        )),
+      ]);
       ffmpeg = engine;
       addLog('FFmpeg WebAssembly のロードが完了');
       return engine;
