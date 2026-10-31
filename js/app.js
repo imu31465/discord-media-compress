@@ -3,7 +3,7 @@ const FFMPEG_CLASS_WORKER_URL = 'https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.1
 // The class worker is a module worker, so it must import the ESM core build.
 const FFMPEG_CORE_BASE = 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/esm';
 const FFMPEG_LOAD_TIMEOUT_MS = 60_000;
-const BUILD_ID = '8dcf843-pages-cache-check';
+const BUILD_ID = '17e7306-ffprobe-arg-order';
 const AUDIO_BITRATE = 160_000;
 const MAX_ATTEMPTS = 3;
 
