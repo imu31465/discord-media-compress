@@ -3,7 +3,7 @@ const FFMPEG_CLASS_WORKER_URL = 'https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.1
 // The class worker is a module worker, so it must import the ESM core build.
 const FFMPEG_CORE_BASE = 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/esm';
 const FFMPEG_LOAD_TIMEOUT_MS = 60_000;
-const BUILD_ID = '17e7306-ffprobe-arg-order';
+const BUILD_ID = 'ffprobe-json-result-check';
 const AUDIO_BITRATE = 160_000;
 const MAX_ATTEMPTS = 3;
 
@@ -305,16 +305,35 @@ async function probeMedia(engine, inputPath, outputPath, countPackets = false) {
   try {
     addLog(`FFprobe: ${countPackets ? 'packet-count probe' : 'input probe'} を実行`);
     const code = await engine.ffprobe(args);
-    if (code !== 0) {
-      addLog(`FFprobe failed with exit code: ${code}`);
-      throw new Error(`動画の解析に失敗しました (FFprobe exit code: ${code})。処理ログに表示されたFFmpegのエラーを確認してください。`);
-    }
-    const raw = await engine.readFile(outputPath, 'utf8');
+
+    // @ffmpeg/core 0.12.10 has a known issue where ffprobe() may return -1
+    // even after successfully writing its requested output file. The output
+    // JSON is authoritative: read and validate it before deciding this failed.
+    let raw;
     try {
-      return JSON.parse(raw);
-    } catch {
-      throw new Error('動画メタデータを読み取れませんでした。');
+      raw = await engine.readFile(outputPath, 'utf8');
+    } catch (readError) {
+      addLog(`FFprobe returned ${code}; output file could not be read: ${readError instanceof Error ? readError.message : String(readError)}`);
+      throw new Error(`動画の解析結果を取得できませんでした (FFprobe exit code: ${code})。動画形式またはメタデータを確認してください。`);
     }
+
+    let probe;
+    try {
+      probe = JSON.parse(raw);
+    } catch {
+      addLog(`FFprobe output was not valid JSON (exit code: ${code})`);
+      throw new Error('動画メタデータをJSONとして読み取れませんでした。処理ログを確認してください。');
+    }
+
+    if (!probe || !Array.isArray(probe.streams)) {
+      addLog(`FFprobe JSON is incomplete (exit code: ${code})`);
+      throw new Error('動画の解析結果にストリーム情報がありません。ファイル形式または破損を確認してください。');
+    }
+
+    if (code !== 0) {
+      addLog(`FFprobe returned ${code}, but valid metadata JSON was produced. Treating probe as successful (core 0.12.10 return-code issue).`);
+    }
+    return probe;
   } finally {
     await safeDelete(engine, outputPath);
   }
